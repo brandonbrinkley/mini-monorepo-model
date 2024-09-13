@@ -1,0 +1,1 @@
+# mini-monorepo-model
