@@ -1,0 +1,77 @@
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Find Commits with User Story Tag
+      id: find_commits
+      run: |
+        USER_STORY_TAG="#nnnnnn"  # Replace this with dynamic input if needed
+        COMMITS=$(git log --pretty="%H" --grep="${USER_STORY_TAG}")
+        if [ -z "$COMMITS" ]; then
+          echo "No commits found with User Story tag: ${USER_STORY_TAG}"
+          exit 1
+        fi
+        echo "Found commits with tag: $COMMITS"
+        echo "::set-output name=commits::$COMMITS"
+
+    - name: Determine Changed Files for the Commits
+      id: changes
+      run: |
+        COMMITS="${{ steps.find_commits.outputs.commits }}"
+        CHANGED_FILES=""
+        for COMMIT in $COMMITS; do
+          FILES=$(git diff --name-only ${COMMIT}^ ${COMMIT})
+          CHANGED_FILES="$CHANGED_FILES $FILES"
+        done
+        CHANGED_FILES=$(echo "$CHANGED_FILES" | tr ' ' '\n' | sort -u | tr '\n' ' ')
+        echo "Changed files: $CHANGED_FILES"
+        echo "::set-output name=changed_files::$CHANGED_FILES"
+
+    - name: Create Tarball of Changed Files
+      run: |
+        mkdir -p changed_files
+        for FILE in ${{ steps.changes.outputs.changed_files }}; do
+          if [ -f "$FILE" ]; then
+            mkdir -p "changed_files/$(dirname $FILE)"
+            cp "$FILE" "changed_files/$FILE"
+          fi
+        done
+        tar -czf changed_files.tar.gz -C changed_files .
+        echo "Created tarball changed_files.tar.gz"
+
+    - name: Create GitHub Release
+      uses: actions/create-release@v1
+      with:
+        tag_name: ${{ github.sha }}
+        release_name: Release ${{ github.sha }}
+        draft: false
+        prerelease: false
+
+    - name: Upload Tarball to GitHub Release
+      uses: actions/upload-release-asset@v1
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./changed_files.tar.gz
+        asset_name: changed_files.tar.gz
+        asset_content_type: application/gzip
+
+    - name: Checkout QA Branch
+      run: |
+        git checkout -b qa || git checkout qa  # Create the branch if it does not exist
+        git pull origin qa
+
+    - name: Cherry-Pick Commits to QA Branch
+      run: |
+        COMMITS="${{ steps.find_commits.outputs.commits }}"
+        for COMMIT in $COMMITS; do
+          echo "Cherry-picking commit $COMMIT"
+          git cherry-pick $COMMIT
+        done
+        git push origin qa
